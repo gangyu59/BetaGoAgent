@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Project specific
+worker.log
+training_stats.json
+training_stats.json.tmp
+training_cmd.json
+model_latest.pth.tmp
+
+# IDE
+.idea/
+.vscode/
+
+# Large files (optional, but good practice if not using LFS)
+# model_latest.pth 
