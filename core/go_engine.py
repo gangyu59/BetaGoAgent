@@ -3,8 +3,8 @@ import numpy as np
 
 class GoEngine:
     """
-    A high-performance pure Python (NumPy) Go rules engine.
-    Implements: capture, ko, suicide rule, scoring.
+    Go rules engine for 9x9 board.
+    Implements: capture, ko, suicide rule, Chinese-rules territory scoring.
     """
     def __init__(self, board_size=9, komi=7.5):
         self.board_size = board_size
@@ -16,10 +16,10 @@ class GoEngine:
         self.board = np.zeros((self.board_size, self.board_size), dtype=np.int8)
         self.current_player = 1  # 1=Black, 2=White
         self.ko = None  # Ko position (x, y)
-        self.history = []  # History for superko check (simplified for now)
+        self.history = []  # Board state history
         self.move_count = 0
         self.passes = 0
-        self.dead_stones = {1: 0, 2: 0} # Captured stones count
+        self.dead_stones = {1: 0, 2: 0}
         return self.get_state()
 
     def get_state(self):
@@ -29,84 +29,62 @@ class GoEngine:
     def switch_player(self):
         self.current_player = 3 - self.current_player
 
-    def is_eyeish(self, x, y, owner):
-        """Check if point is an eye (simplified) for heuristic pruning"""
-        if x < 0 or x >= self.board_size or y < 0 or y >= self.board_size:
-            return False
-        if self.board[x, y] != 0:
-            return False
-            
-        # Check 4 neighbors: must be owner or edge
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
-                if self.board[nx, ny] != owner:
-                    return False
-        
-        return True
-
     def is_valid_move(self, x, y):
-        """Check if a move is valid"""
+        """Check if a move is valid (pure rules, no heuristic pruning)"""
         if x < 0 or x >= self.board_size or y < 0 or y >= self.board_size:
             return False
         if self.board[x, y] != 0:
             return False
-        
-        # Temporary move for testing
-        test_board = self.board.copy()
-        test_board[x, y] = self.current_player
-        
+
         # 1. Check Ko
         if self.ko and (x, y) == self.ko:
             return False
 
-        # 2. Check Liberties (Suicide rule)
+        # Temporary move for testing
+        test_board = self.board.copy()
+        test_board[x, y] = self.current_player
+
+        # 2. Check captures
         opponent = 3 - self.current_player
         captured = self._find_captured(test_board, x, y, opponent)
-        
-        # If captured opponent stones, it has liberties, so valid
+
+        # If captured opponent stones, move is always valid
         if len(captured) > 0:
             return True
-            
-        # If no capture, check self liberties
+
+        # 3. Check self liberties (suicide rule)
         if not self._has_liberty(test_board, x, y):
-            return False # Suicide
-            
-        # 3. Heuristic: Don't fill own eye (unless it captures or saves group)
-        # This is not a rule, but a strong heuristic to speed up learning in early phase
-        if self.is_eyeish(x, y, self.current_player):
-            # Only allow if it captures something (snapback) or saves own stones?
-            # Simplified: don't fill simple eyes
-            if len(captured) == 0:
-                 return False
+            return False
 
         return True
 
     def step(self, action):
         """
-        Execute a move
+        Execute a move.
         action: (x, y) or None (Pass)
         Returns: (board, reward, done, info)
         """
         if action is None:
             self.passes += 1
+            self.history.append(self.board.copy())
             self.switch_player()
             self.move_count += 1
-            # Double Pass ends game
             if self.passes >= 2:
-                return self.board.copy(), self._calculate_reward(), True, {"result": "double_pass"}
+                winner = self.get_winner()
+                reward = 1 if winner == 1 else -1
+                return self.board.copy(), reward, True, {"result": "double_pass", "winner": winner}
             return self.board.copy(), 0, False, {}
 
         x, y = action
         if not self.is_valid_move(x, y):
             raise ValueError(f"Invalid move: {action} for player {self.current_player}")
 
-        self.passes = 0 # Reset pass count
-        
+        self.passes = 0
+
         # Place stone
         self.board[x, y] = self.current_player
         opponent = 3 - self.current_player
-        
+
         # Capture logic
         captured_stones = self._find_captured(self.board, x, y, opponent)
         for cx, cy in captured_stones:
@@ -114,7 +92,6 @@ class GoEngine:
         self.dead_stones[self.current_player] += len(captured_stones)
 
         # Update Ko state
-        # If one stone is captured and the new stone has only 1 liberty, it's a Ko
         if len(captured_stones) == 1 and self._count_liberties(self.board, x, y) == 1:
             self.ko = captured_stones[0]
         else:
@@ -123,10 +100,12 @@ class GoEngine:
         self.history.append(self.board.copy())
         self.move_count += 1
         self.switch_player()
-        
-        # Max moves limit
-        if self.move_count > self.board_size ** 2 * 2:
-            return self.board.copy(), 0, True, {"result": "max_moves"}
+
+        max_moves = self.board_size ** 2 * 3
+        if self.move_count >= max_moves:
+            winner = self.get_winner()
+            reward = 1 if winner == 1 else -1
+            return self.board.copy(), reward, True, {"result": "max_moves", "winner": winner}
 
         return self.board.copy(), 0, False, {}
 
@@ -145,7 +124,7 @@ class GoEngine:
     def _has_liberty(self, board, x, y):
         _, liberties = self._get_group_and_liberties(board, x, y)
         return liberties > 0
-        
+
     def _count_liberties(self, board, x, y):
         _, liberties = self._get_group_and_liberties(board, x, y)
         return liberties
@@ -153,17 +132,19 @@ class GoEngine:
     def _get_group_and_liberties(self, board, start_x, start_y):
         """BFS to find group and count liberties"""
         color = board[start_x, start_y]
+        if color == 0:
+            return [], 0
         group = []
         visited = set()
         queue = [(start_x, start_y)]
         visited.add((start_x, start_y))
-        
+
         liberty_points = set()
 
         while queue:
             cx, cy = queue.pop(0)
             group.append((cx, cy))
-            
+
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nx, ny = cx + dx, cy + dy
                 if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
@@ -172,21 +153,73 @@ class GoEngine:
                     elif board[nx, ny] == color and (nx, ny) not in visited:
                         visited.add((nx, ny))
                         queue.append((nx, ny))
-        
+
         return group, len(liberty_points)
 
-    def _calculate_reward(self):
+    def _flood_fill_territory(self, board):
         """
-        Simple Area Scoring (Stone count + Komi).
-        Does not implement full territory counting yet (TODO).
+        Compute territory using flood-fill.
+        Empty points surrounded entirely by one color belong to that color.
         """
-        black_score = np.sum(self.board == 1)
-        white_score = np.sum(self.board == 2) + self.komi
-        
-        if black_score > white_score:
-            return 1 # Black wins
-        else:
-            return -1 # White wins
+        size = self.board_size
+        visited = np.zeros((size, size), dtype=bool)
+        black_territory = 0
+        white_territory = 0
+
+        for x in range(size):
+            for y in range(size):
+                if board[x, y] == 0 and not visited[x, y]:
+                    region = []
+                    queue = [(x, y)]
+                    visited[x, y] = True
+                    borders = set()
+
+                    while queue:
+                        cx, cy = queue.pop(0)
+                        region.append((cx, cy))
+                        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nx, ny = cx + dx, cy + dy
+                            if 0 <= nx < size and 0 <= ny < size:
+                                if board[nx, ny] == 0 and not visited[nx, ny]:
+                                    visited[nx, ny] = True
+                                    queue.append((nx, ny))
+                                elif board[nx, ny] != 0:
+                                    borders.add(int(board[nx, ny]))
+
+                    if borders == {1}:
+                        black_territory += len(region)
+                    elif borders == {2}:
+                        white_territory += len(region)
+
+        return black_territory, white_territory
+
+    def _calculate_score(self):
+        """Chinese rules scoring: stones on board + territory"""
+        black_stones = int(np.sum(self.board == 1))
+        white_stones = int(np.sum(self.board == 2))
+        black_territory, white_territory = self._flood_fill_territory(self.board)
+        black_score = black_stones + black_territory
+        white_score = white_stones + white_territory + self.komi
+        return black_score, white_score
+
+    def get_winner(self):
+        black_score, white_score = self._calculate_score()
+        return 1 if black_score > white_score else 2
+
+    def get_score(self):
+        """Return detailed scoring info"""
+        black_stones = int(np.sum(self.board == 1))
+        white_stones = int(np.sum(self.board == 2))
+        black_territory, white_territory = self._flood_fill_territory(self.board)
+        return {
+            'black_stones': black_stones,
+            'white_stones': white_stones,
+            'black_territory': black_territory,
+            'white_territory': white_territory,
+            'black_total': black_stones + black_territory,
+            'white_total': white_stones + white_territory + self.komi,
+            'komi': self.komi,
+        }
 
     def clone(self):
         """Create a deep copy of the game engine"""
@@ -207,13 +240,8 @@ class GoEngine:
             for y in range(self.board_size):
                 if self.is_valid_move(x, y):
                     moves.append((x, y))
-        moves.append(None) # Pass is always an option (usually)
+        moves.append(None)
         return moves
-
-    def get_winner(self):
-        if self._calculate_reward() > 0:
-            return 1
-        return 2
 
     def render(self):
         """Print board to console"""
@@ -228,4 +256,5 @@ class GoEngine:
                 else:
                     row_str += " O"
             print(row_str)
-        print(f"Ko: {self.ko}, Move: {self.move_count}, Dead: B{self.dead_stones[1]}/W{self.dead_stones[2]}")
+        bs, ws = self._calculate_score()
+        print(f"Ko: {self.ko}, Move: {self.move_count}, Score: B{bs}/W{ws}")

@@ -1,4 +1,3 @@
-
 const canvas = document.getElementById("go-board");
 const ctx = canvas.getContext("2d");
 const statusLog = document.getElementById("status-log");
@@ -17,9 +16,11 @@ const CELL_SIZE = (canvas.width - 2 * PADDING) / (BOARD_SIZE - 1);
 
 let gameState = {
     board: Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(0)),
-    turn: 1, // 1=Black, 2=White
+    turn: 1,
     lastMove: null,
-    analysis: null
+    analysis: null,
+    score: null,
+    moveCount: 0
 };
 
 let showHeatmap = true;
@@ -28,16 +29,14 @@ let showHeatmap = true;
 
 function drawBoard() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
+
     // Draw grid
     ctx.strokeStyle = "#000";
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 0; i < BOARD_SIZE; i++) {
-        // Vertical
         ctx.moveTo(PADDING + i * CELL_SIZE, PADDING);
         ctx.lineTo(PADDING + i * CELL_SIZE, canvas.height - PADDING);
-        // Horizontal
         ctx.moveTo(PADDING, PADDING + i * CELL_SIZE);
         ctx.lineTo(canvas.width - PADDING, PADDING + i * CELL_SIZE);
     }
@@ -52,12 +51,17 @@ function drawBoard() {
         ctx.fill();
     }
 
+    // Draw heatmap BEFORE stones so stones appear on top
+    if (showHeatmap && gameState.analysis && gameState.analysis.policy) {
+        drawHeatmap(gameState.analysis.policy);
+    }
+
     // Draw stones
-    for (let y = 0; y < BOARD_SIZE; y++) {
-        for (let x = 0; x < BOARD_SIZE; x++) {
-            const stone = gameState.board[x][y];
+    for (let row = 0; row < BOARD_SIZE; row++) {
+        for (let col = 0; col < BOARD_SIZE; col++) {
+            const stone = gameState.board[row][col];
             if (stone !== 0) {
-                drawStone(x, y, stone);
+                drawStone(col, row, stone);
             }
         }
     }
@@ -68,66 +72,75 @@ function drawBoard() {
         ctx.strokeStyle = "#ff0000";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(PADDING + lx * CELL_SIZE, PADDING + ly * CELL_SIZE, CELL_SIZE * 0.2, 0, 2 * Math.PI);
+        ctx.arc(PADDING + ly * CELL_SIZE, PADDING + lx * CELL_SIZE, CELL_SIZE * 0.2, 0, 2 * Math.PI);
         ctx.stroke();
-    }
-
-    // Draw heatmap
-    if (showHeatmap && gameState.analysis && gameState.analysis.policy) {
-        drawHeatmap(gameState.analysis.policy);
     }
 }
 
-function drawStone(x, y, color) {
-    const cx = PADDING + x * CELL_SIZE;
-    const cy = PADDING + y * CELL_SIZE;
+function drawStone(col, row, color) {
+    const cx = PADDING + col * CELL_SIZE;
+    const cy = PADDING + row * CELL_SIZE;
     const r = CELL_SIZE * 0.45;
+
+    // Reset shadow before drawing
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
 
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-    
-    // Gradient for 3D effect
+
     const grad = ctx.createRadialGradient(cx - r/3, cy - r/3, r/5, cx, cy, r);
-    if (color === 1) { // Black
+    if (color === 1) {
         grad.addColorStop(0, "#444");
         grad.addColorStop(1, "#000");
-    } else { // White
+    } else {
         grad.addColorStop(0, "#fff");
         grad.addColorStop(1, "#ddd");
     }
-    
+
     ctx.fillStyle = grad;
     ctx.fill();
-    
+
     // Shadow
     ctx.shadowColor = "rgba(0,0,0,0.5)";
     ctx.shadowBlur = 5;
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
     ctx.fill();
-    ctx.shadowColor = "transparent"; // Reset
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    // White stone outline
+    if (color === 2) {
+        ctx.strokeStyle = "#aaa";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+    }
 }
 
 function drawHeatmap(policy) {
-    // policy is a flat array of 81 floats
     const maxProb = Math.max(...policy);
-    
+    if (maxProb < 0.001) return;
+
     for (let i = 0; i < policy.length; i++) {
         const prob = policy[i];
-        if (prob < 0.01) continue; // Skip low prob
-        
-        const x = Math.floor(i / BOARD_SIZE);
-        const y = i % BOARD_SIZE;
-        
-        const cx = PADDING + x * CELL_SIZE;
-        const cy = PADDING + y * CELL_SIZE;
-        
-        // Green square with alpha based on probability
-        const alpha = (prob / maxProb) * 0.6;
+        if (prob < 0.01) continue;
+
+        // policy index i = row * 9 + col
+        const row = Math.floor(i / BOARD_SIZE);
+        const col = i % BOARD_SIZE;
+
+        const cx = PADDING + col * CELL_SIZE;
+        const cy = PADDING + row * CELL_SIZE;
+
+        const alpha = (prob / maxProb) * 0.5;
         ctx.fillStyle = `rgba(46, 204, 113, ${alpha})`;
         ctx.fillRect(cx - CELL_SIZE/2, cy - CELL_SIZE/2, CELL_SIZE, CELL_SIZE);
-        
-        // Draw prob text if high enough
+
         if (prob > 0.05) {
             ctx.fillStyle = "#000";
             ctx.font = "10px Arial";
@@ -141,25 +154,26 @@ function drawHeatmap(policy) {
 // --- Interaction ---
 
 canvas.addEventListener("click", (e) => {
+    if (gameState.turn !== 1) return; // Only allow clicks on human's turn
+
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    
+
     const clickX = (e.clientX - rect.left) * scaleX;
     const clickY = (e.clientY - rect.top) * scaleY;
-    
-    // Convert to grid coordinates
-    // x = (clickX - PADDING) / CELL_SIZE
-    const x = Math.round((clickX - PADDING) / CELL_SIZE);
-    const y = Math.round((clickY - PADDING) / CELL_SIZE);
-    
-    if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE) {
-        log(`Click at ${x}, ${y}`);
-        // Send move to server
+
+    // Canvas X -> col, Canvas Y -> row
+    const col = Math.round((clickX - PADDING) / CELL_SIZE);
+    const row = Math.round((clickY - PADDING) / CELL_SIZE);
+
+    if (col >= 0 && col < BOARD_SIZE && row >= 0 && row < BOARD_SIZE) {
+        log(`Move: (${row}, ${col})`);
+        // Server expects (x, y) = (row, col) for board[x][y]
         ws.send(JSON.stringify({
             type: "move",
-            x: x,
-            y: y
+            x: row,
+            y: col
         }));
     }
 });
@@ -170,35 +184,41 @@ function updateStats(turn, analysis) {
     const turnText = turn === 1 ? "Your Turn (Black)" : "AI Thinking (White)...";
     const turnEl = document.getElementById("turn-indicator");
     turnEl.innerText = turnText;
-    
-    // Highlight turn style
+
     if (turn === 1) {
-        turnEl.style.color = "#2c3e50";
+        turnEl.style.color = "#ecf0f1";
         turnEl.style.fontWeight = "bold";
     } else {
         turnEl.style.color = "#e67e22";
         turnEl.style.fontWeight = "normal";
     }
-    
+
     if (analysis) {
-        // Value is from -1 (White wins) to 1 (Black wins)
-        const winRate = (analysis.value + 1) / 2 * 100; // 0 to 100% for Black
-        
+        const winRate = (analysis.value + 1) / 2 * 100;
+
         const fill = document.getElementById("win-rate-fill");
         const text = document.getElementById("win-rate-text");
-        
+
         fill.style.width = `${winRate}%`;
-        
+
         if (analysis.value > 0) {
-            fill.style.backgroundColor = "#2c3e50"; // Black color
+            fill.style.backgroundColor = "#2c3e50";
             text.innerText = `Black ${winRate.toFixed(1)}%`;
             text.style.color = "#ecf0f1";
         } else {
-            fill.style.backgroundColor = "#e74c3c"; // Red/White color
+            fill.style.backgroundColor = "#e74c3c";
             text.innerText = `White ${(100 - winRate).toFixed(1)}%`;
             text.style.color = "#2c3e50";
         }
     }
+}
+
+function updateScore(score) {
+    if (!score) return;
+    const blackEl = document.getElementById("score-black");
+    const whiteEl = document.getElementById("score-white");
+    if (blackEl) blackEl.innerText = score.black_total || 0;
+    if (whiteEl) whiteEl.innerText = score.white_total || 7.5;
 }
 
 function toggleHeatmap() {
@@ -206,12 +226,8 @@ function toggleHeatmap() {
     drawBoard();
 }
 
-function resetGame() {
-    ws.send(JSON.stringify({ type: "reset" }));
-}
-
-function startGame() {
-    ws.send(JSON.stringify({ type: "start_game" }));
+function playerPass() {
+    ws.send(JSON.stringify({ type: "pass" }));
 }
 
 function newGame() {
@@ -220,16 +236,18 @@ function newGame() {
         btn.disabled = true;
         btn.innerText = "Starting...";
     }
-    // Optimistic UI: clear board immediately
+    const resultEl = document.getElementById("game-result");
+    if (resultEl) resultEl.style.display = "none";
+
     gameState.board = Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(0));
     gameState.turn = 1;
     gameState.lastMove = null;
     gameState.analysis = null;
+    gameState.moveCount = 0;
     drawBoard();
     updateStats(gameState.turn, gameState.analysis);
-    // Send to server
+
     ws.send(JSON.stringify({ type: "start_game" }));
-    // Fallback re-enable
     setTimeout(() => {
         if (btn) {
             btn.disabled = false;
@@ -243,14 +261,11 @@ function toggleTraining() {
     if (btn) {
         btn.disabled = true;
         btn.innerText = "Processing...";
-        btn.style.backgroundColor = "#f1c40f"; // Yellow
+        btn.style.backgroundColor = "#f1c40f";
     }
     ws.send(JSON.stringify({ type: "toggle_training" }));
-    // Fallback: re-enable after 2s if no server update arrives
     setTimeout(() => {
-        if (btn) {
-            btn.disabled = false;
-        }
+        if (btn) btn.disabled = false;
     }, 2000);
 }
 
@@ -262,16 +277,37 @@ ws.onopen = () => {
 
 ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-    
+
     if (msg.type === "init" || msg.type === "update") {
         gameState.board = msg.board;
         gameState.turn = msg.turn;
-        if (msg.last_move) gameState.lastMove = msg.last_move;
+        if (msg.last_move !== undefined) gameState.lastMove = msg.last_move;
         if (msg.analysis) gameState.analysis = msg.analysis;
-        
+        if (msg.score) {
+            gameState.score = msg.score;
+            updateScore(msg.score);
+        }
+        gameState.moveCount++;
+
+        const moveEl = document.getElementById("move-count");
+        if (moveEl) moveEl.innerText = gameState.moveCount;
+
         drawBoard();
         updateStats(gameState.turn, gameState.analysis);
-        log("Board updated");
+    } else if (msg.type === "game_over") {
+        gameState.board = msg.board;
+        if (msg.score) {
+            gameState.score = msg.score;
+            updateScore(msg.score);
+        }
+        drawBoard();
+        const resultEl = document.getElementById("game-result");
+        if (resultEl) {
+            const winner = msg.winner === 1 ? "Black" : "White";
+            const s = msg.score;
+            resultEl.innerText = `Game Over! ${winner} wins (B:${s.black_total} vs W:${s.white_total})`;
+            resultEl.style.display = "block";
+        }
     } else if (msg.type === "training_update") {
         updateTrainingChart(msg.stats);
         updateTrainingButton(msg.running);
@@ -287,11 +323,11 @@ function updateTrainingButton(running) {
     const btn = document.getElementById("btn-train");
     if (running) {
         btn.innerText = "Stop Training";
-        btn.style.backgroundColor = "#e74c3c"; // Red
+        btn.style.backgroundColor = "#e74c3c";
         btn.disabled = false;
     } else {
         btn.innerText = "Start Training";
-        btn.style.backgroundColor = "#2ecc71"; // Green
+        btn.style.backgroundColor = "#2ecc71";
         btn.disabled = false;
     }
 }
@@ -300,10 +336,10 @@ ws.onerror = (err) => {
     log("WebSocket Error: " + err);
 };
 
-// Initial draw (empty board)
+// Initial draw
 drawBoard();
 
-// --- Chart.js Setup (Mock for now) ---
+// --- Chart.js Setup ---
 const ctxChart = document.getElementById("lossChart").getContext("2d");
 const lossChart = new Chart(ctxChart, {
     type: "line",
@@ -314,47 +350,32 @@ const lossChart = new Chart(ctxChart, {
             borderColor: "#3498db",
             tension: 0.1,
             yAxisID: "yPolicy",
-            pointRadius: 2
+            pointRadius: 1
         }, {
             label: "Value Loss",
             data: [],
             borderColor: "#e67e22",
             tension: 0.1,
             yAxisID: "yValue",
-            pointRadius: 2
+            pointRadius: 1
         }, {
             label: "Accuracy",
             data: [],
-            borderColor: "#9b59b6", // Purple
+            borderColor: "#9b59b6",
             tension: 0.1,
             yAxisID: "yWinRate",
-            pointRadius: 2
-        }, {
-            label: "Policy Loss Target",
-            data: [],
-            borderColor: "#95a5a6",
-            borderDash: [6, 4],
-            tension: 0,
-            pointRadius: 0,
-            yAxisID: "yPolicy"
-        }, {
-            label: "Value Loss Target",
-            data: [],
-            borderColor: "#7f8c8d",
-            borderDash: [6, 4],
-            tension: 0,
-            pointRadius: 0,
-            yAxisID: "yValue"
+            pointRadius: 1
         }]
     },
     options: {
         responsive: true,
         parsing: false,
+        animation: false,
         plugins: {
             decimation: {
                 enabled: true,
                 algorithm: "lttb",
-                samples: 1000
+                samples: 500
             }
         },
         scales: {
@@ -364,23 +385,19 @@ const lossChart = new Chart(ctxChart, {
             },
             yPolicy: {
                 position: "left",
-                beginAtZero: true
+                beginAtZero: true,
+                title: { display: true, text: "Policy Loss" }
             },
             yValue: {
                 position: "right",
                 beginAtZero: true,
-                suggestedMax: 0.005,
-                ticks: {
-                    callback: (v) => v.toFixed(4)
-                }
+                title: { display: true, text: "Value Loss" }
             },
             yWinRate: {
                 position: "right",
                 beginAtZero: true,
                 max: 1.0,
-                grid: {
-                    drawOnChartArea: false // Don't clutter grid
-                },
+                grid: { drawOnChartArea: false },
                 ticks: {
                     callback: (v) => (v * 100).toFixed(0) + "%"
                 }
@@ -396,6 +413,7 @@ const lossChartLarge = new Chart(ctxChartLarge, {
     options: {
         responsive: true,
         parsing: false,
+        animation: false,
         plugins: {
             decimation: {
                 enabled: true,
@@ -414,70 +432,53 @@ const lossChartLarge = new Chart(ctxChartLarge, {
             },
             yValue: {
                 position: "right",
+                beginAtZero: true
+            },
+            yWinRate: {
+                position: "right",
                 beginAtZero: true,
-                suggestedMax: 0.005,
+                max: 1.0,
+                grid: { drawOnChartArea: false },
                 ticks: {
-                    callback: (v) => v.toFixed(4)
+                    callback: (v) => (v * 100).toFixed(0) + "%"
                 }
             }
         }
     }
 });
 
-// Seed chart with initial points and show overlay immediately
-lossChart.data.datasets[2].data.push({ x: 0, y: 0.5 }, { x: 1, y: 0.5 });
-lossChart.data.datasets[3].data.push({ x: 0, y: 0.2 }, { x: 1, y: 0.2 });
-lossChart.update();
-lossChartLarge.update();
 const trainingOverlay = document.getElementById("training-overlay");
 if (trainingOverlay) trainingOverlay.style.display = "block";
-// Simulate live chart updates
-// setInterval(() => {
-//    if (lossChart.data.labels.length > 20) {
-//        lossChart.data.labels.shift();
-//        lossChart.data.datasets[0].data.shift();
-//        lossChart.data.datasets[1].data.shift();
-//    }
-//    const step = lossChart.data.labels.length + 1;
-//    lossChart.data.labels.push(step);
-//    lossChart.data.datasets[0].data.push(Math.random() * 2 + 1); // Mock loss
-//    lossChart.data.datasets[1].data.push(Math.random() * 1 + 0.5);
-//    lossChart.update();
-// }, 2000);
 
 function updateTrainingChart(stats) {
+    if (!stats.step) return;
+
     lossChart.data.datasets[0].data.push({ x: stats.step, y: stats.policy_loss });
     lossChart.data.datasets[1].data.push({ x: stats.step, y: stats.value_loss });
-    // Dataset 2 is Accuracy/WinRate
-    lossChart.data.datasets[2].data.push({ x: stats.step, y: stats.win_rate }); 
-    // Targets are now 3 and 4
-    lossChart.data.datasets[3].data.push({ x: stats.step, y: 0.5 });
-    lossChart.data.datasets[4].data.push({ x: stats.step, y: 0.2 });
-    
-    // Dynamically adjust value axis to show fine details
-    const curVal = stats.value_loss;
-    const newMax = Math.max(0.001, curVal * 3);
-    lossChart.options.scales.yValue.max = newMax;
-    lossChartLarge.options.scales.yValue.max = newMax;
-    lossChart.update();
-    lossChartLarge.update();
+    lossChart.data.datasets[2].data.push({ x: stats.step, y: stats.win_rate });
+
+    lossChart.update('none');
+    lossChartLarge.update('none');
 
     const winRate = (stats.win_rate * 100).toFixed(1);
     const wrSpan = document.getElementById("training-win-rate");
     if (wrSpan) wrSpan.innerText = winRate;
 
+    const lrSpan = document.getElementById("lr-val");
+    if (lrSpan && stats.lr) lrSpan.innerText = stats.lr.toFixed(6);
+
     document.getElementById("p-loss-val").innerText = stats.policy_loss.toFixed(4);
     document.getElementById("v-loss-val").innerText = stats.value_loss.toFixed(4);
-    
+
     if (stats.games !== undefined) {
         document.getElementById("game-count").innerText = stats.games;
     }
     if (stats.buffer !== undefined) {
-        statusLog.innerText = `Buffer: ${stats.buffer}/${stats.min_buffer ?? 1000}  |  Step: ${stats.step}`;
+        statusLog.innerText = `Buffer: ${stats.buffer}/${stats.min_buffer ?? 512}  |  Step: ${stats.step}`;
         const overlayEl = document.getElementById("training-overlay");
         const fillEl = document.getElementById("buffer-fill");
         if (fillEl) {
-            const minBuf = stats.min_buffer ?? 1000;
+            const minBuf = stats.min_buffer ?? 512;
             const pct = Math.max(0, Math.min(100, (stats.buffer / minBuf) * 100));
             fillEl.style.width = `${pct}%`;
         }

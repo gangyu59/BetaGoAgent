@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BetaGo Agent Visualization</title>
+    <title>BetaGo Agent</title>
     <link rel="stylesheet" href="static/css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -15,6 +15,7 @@
                 <h3>Training Metrics</h3>
                 <p>Self-Play Games: <span id="game-count">0</span></p>
                 <p>Policy Accuracy: <span id="training-win-rate">0.0</span>%</p>
+                <p>Learning Rate: <span id="lr-val">0.001</span></p>
                 <div style="font-size: 12px; margin-bottom: 5px;">
                     Policy Loss: <span id="p-loss-val">0.00</span> | Value Loss: <span id="v-loss-val">0.00</span>
                 </div>
@@ -24,6 +25,10 @@
                 <h3>Game Status</h3>
                 <p>Turn: <span id="turn-indicator">Black</span></p>
                 <p>Moves: <span id="move-count">0</span></p>
+                <div class="score-display">
+                    <span class="score-black">Black: <span id="score-black">0</span></span>
+                    <span class="score-white">White: <span id="score-white">7.5</span></span>
+                </div>
                 <div class="win-rate-bar">
                     <div id="win-rate-fill" style="width: 50%;"></div>
                     <span id="win-rate-text">50%</span>
@@ -32,8 +37,10 @@
             <div class="controls">
                 <button id="btn-train" onclick="toggleTraining()">Start Training</button>
                 <button id="btn-new-game" onclick="newGame()">New Game</button>
+                <button id="btn-pass" onclick="playerPass()">Pass</button>
                 <button onclick="toggleHeatmap()">Toggle Heatmap</button>
             </div>
+            <div id="game-result" style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #1abc9c; display: none;"></div>
             <div id="status-log" style="margin-top: 20px; color: #aaa; font-size: 12px;"></div>
         </div>
         <div class="main-area">
