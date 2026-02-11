@@ -16,18 +16,14 @@ def main():
     # 1. Start Training Process
     print("   - Launching Training Worker...")
     # Redirect output to file for debugging
-    worker_log = open("worker.log", "w", encoding="utf-8")
+    worker_log = open(os.path.join(BASE_DIR, "worker.log"), "w", encoding="utf-8")
     trainer_process = subprocess.Popen(
         [sys.executable, "-u", TRAINER_SCRIPT],
         cwd=BASE_DIR,
         stdout=worker_log,
         stderr=subprocess.STDOUT
-        # creationflags=subprocess.CREATE_NEW_CONSOLE # Disabled for stability/debugging
     )
-    worker_log.close() # Close handle in parent so it doesn't block reading
-    
-    # 2. Start Web Server
-    
+
     # 2. Start Web Server
     print("   - Launching Web Server...")
     # uvicorn command
@@ -81,6 +77,10 @@ def main():
         try:
             if server_process.poll() is None:
                 server_process.terminate()
+        except:
+            pass
+        try:
+            worker_log.close()
         except:
             pass
         print("✅ Shutdown complete.")
