@@ -41,6 +41,7 @@ class BetaGoNet(nn.Module):
         self.value_conv = nn.Conv2d(num_channels, 1, kernel_size=1, bias=False)
         self.value_bn = nn.BatchNorm2d(1)
         self.value_fc1 = nn.Linear(board_size * board_size, 128)
+        self.value_dropout = nn.Dropout(p=0.3)
         self.value_fc2 = nn.Linear(128, 1)
 
     def forward(self, x):
@@ -57,6 +58,7 @@ class BetaGoNet(nn.Module):
         v = F.relu(self.value_bn(self.value_conv(out)))
         v = v.view(v.size(0), -1)
         v = F.relu(self.value_fc1(v))
+        v = self.value_dropout(v)
         v = torch.tanh(self.value_fc2(v))
 
         return p, v

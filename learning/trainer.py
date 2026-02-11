@@ -10,7 +10,7 @@ class Trainer:
                  min_buffer_size=512, sleep_throttle=0.01, value_loss_weight=1.0):
         self.network = network
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr, weight_decay=1e-4)
-        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.5)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=10000, gamma=0.5)
         self.buffer = deque(maxlen=buffer_size)
         self.batch_size = batch_size
         self.running = False

@@ -68,8 +68,8 @@ def main():
         buffer_size=50000,
         batch_size=128,
         lr=0.001,
-        min_buffer_size=512,
-        value_loss_weight=1.0,
+        min_buffer_size=2048,
+        value_loss_weight=0.5,
     )
     trainer.set_network_lock(network_lock)
 
@@ -83,6 +83,8 @@ def main():
 
     last_save_time = time.time()
     is_paused = False
+    last_game_count = 0
+    steps_this_cycle = 0
 
     try:
         while True:
@@ -120,9 +122,41 @@ def main():
                 safe_replace(temp_stats_path, STATS_PATH)
                 continue
 
+            # --- Throttle: limit training to ~1 epoch per new game ---
+            current_games = self_play_worker.game_count
+            if current_games > last_game_count:
+                last_game_count = current_games
+                steps_this_cycle = 0  # New data arrived, allow more training
+
+            buffer_len = len(trainer.buffer)
+            max_steps_per_cycle = max(1, buffer_len // trainer.batch_size)
+
+            if steps_this_cycle >= max_steps_per_cycle:
+                # Already trained 1 epoch on current data, wait for more
+                time.sleep(1.0)
+                stats = {
+                    'step': trainer.training_stats['step'],
+                    'policy_loss': trainer.training_stats.get('policy_loss', 0),
+                    'value_loss': trainer.training_stats.get('value_loss', 0),
+                    'total_loss': trainer.training_stats.get('total_loss', 0),
+                    'win_rate': trainer.training_stats.get('win_rate', 0),
+                    'games': self_play_worker.game_count,
+                    'buffer': buffer_len,
+                    'min_buffer': trainer.min_buffer_size,
+                    'ts': time.time(),
+                    'running': True,
+                    'status': 'Waiting for new game data...'
+                }
+                temp_stats_path = STATS_PATH + ".tmp"
+                with open(temp_stats_path, 'w') as f:
+                    json.dump(stats, f)
+                safe_replace(temp_stats_path, STATS_PATH)
+                continue
+
             result = trainer.train_step()
 
             if result:
+                steps_this_cycle += 1
                 stats = dict(trainer.training_stats)
                 stats['games'] = self_play_worker.game_count
                 stats['buffer'] = len(trainer.buffer)
