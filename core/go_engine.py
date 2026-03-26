@@ -71,7 +71,10 @@ class GoEngine:
             self.move_count += 1
             if self.passes >= 2:
                 winner = self.get_winner()
-                reward = 1 if winner == 1 else -1
+                if winner == 0:
+                    reward = 0
+                else:
+                    reward = 1 if winner == 1 else -1
                 return self.board.copy(), reward, True, {"result": "double_pass", "winner": winner}
             return self.board.copy(), 0, False, {}
 
@@ -104,7 +107,10 @@ class GoEngine:
         max_moves = self.board_size ** 2 * 3
         if self.move_count >= max_moves:
             winner = self.get_winner()
-            reward = 1 if winner == 1 else -1
+            if winner == 0:
+                reward = 0
+            else:
+                reward = 1 if winner == 1 else -1
             return self.board.copy(), reward, True, {"result": "max_moves", "winner": winner}
 
         return self.board.copy(), 0, False, {}
@@ -203,8 +209,17 @@ class GoEngine:
         return black_score, white_score
 
     def get_winner(self):
+        """
+        Return winner: 1 = Black, 2 = White, 0 = draw.
+        With komi=7.5 on 9x9, draws are extremely rare but handled for completeness.
+        """
         black_score, white_score = self._calculate_score()
-        return 1 if black_score > white_score else 2
+        if black_score > white_score:
+            return 1
+        elif white_score > black_score:
+            return 2
+        else:
+            return 0
 
     def get_score(self):
         """Return detailed scoring info"""

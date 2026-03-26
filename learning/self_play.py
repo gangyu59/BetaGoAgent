@@ -34,9 +34,14 @@ class SelfPlayWorker:
                 time.sleep(1)
                 continue
 
-            self._play_one_game()
-            self.game_count += 1
-            print(f"[Self-Play] Game {self.game_count} finished.")
+            try:
+                self._play_one_game()
+                self.game_count += 1
+                print(f"[Self-Play] Game {self.game_count} finished.")
+            except Exception as e:
+                print(f"[Self-Play] Game error (skipping): {e}")
+                import traceback
+                traceback.print_exc()
 
     def _play_one_game(self):
         game = GoEngine(board_size=9)
@@ -85,13 +90,32 @@ class SelfPlayWorker:
             policy_targets.append(sym_policies)
             players.append(game.current_player)
 
-            # Sample action
-            action_idx = np.random.choice(82, p=policy)
+            # Sample action (discourage early pass during self-play)
+            probs = np.array(policy, dtype=np.float64)
+            min_moves_before_pass = 30  # before this many moves, do not pass
+            if move_num < min_moves_before_pass:
+                probs[81] = 0.0
+
+            if probs.sum() <= 1e-12:
+                probs = np.array(policy, dtype=np.float64)
+
+            probs = probs / probs.sum()
+            action_idx = np.random.choice(82, p=probs)
 
             if action_idx == 81:
                 action = None
             else:
                 action = (action_idx // 9, action_idx % 9)
+
+            # Ensure we only play legal moves (policy can have numerical noise)
+            if action is not None and not game.is_valid_move(action[0], action[1]):
+                legal = game.get_legal_moves()
+                # Prefer a board move over pass if any
+                action = None
+                for m in legal:
+                    if m is not None:
+                        action = m
+                        break
 
             _, _, done, info = game.step(action)
             move_num += 1
@@ -106,7 +130,9 @@ class SelfPlayWorker:
 
         # Assign value targets based on game outcome
         for i in range(len(states)):
-            if winner == players[i]:
+            if winner == 0:
+                z = 0.0
+            elif winner == players[i]:
                 z = 1.0
             else:
                 z = -1.0

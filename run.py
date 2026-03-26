@@ -6,6 +6,12 @@ import webbrowser
 import signal
 
 def main():
+    # Ensure stdout can handle Unicode (e.g. emojis) on Windows consoles
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
     print("🚀 Initializing GoTrainer System (Multi-Process)...")
     
     # Paths
@@ -28,13 +34,14 @@ def main():
     print("   - Launching Web Server...")
     # uvicorn command
     server_process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "web.backend.server:app", "--host", "127.0.0.1", "--port", "8050"],
+        [sys.executable, "-m", "uvicorn", "web.backend.server:app", "--host", "0.0.0.0", "--port", "8050"],
         cwd=BASE_DIR,
         # creationflags=subprocess.CREATE_NEW_CONSOLE 
     )
     
     print("✅ System Started!")
-    print("   - Web Interface: http://127.0.0.1:8050")
+    print("   - 本机访问: http://127.0.0.1:8050")
+    print("   - 手机访问: http://<电脑IP>:8050  (同WiFi下，如 http://192.168.1.100:8050)")
     
     # Open browser
     time.sleep(2)

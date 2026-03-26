@@ -63,26 +63,65 @@ def main():
 
     encoder = FeatureEncoder(board_size=9)
 
+    # Trainer: for 9x9 + CPU，更注重训练步数速度
     trainer = Trainer(
         network,
         buffer_size=50000,
         batch_size=128,
         lr=0.001,
-        min_buffer_size=2048,
+        # 较小的 min_buffer_size 让训练更早、更频繁地进行
+        min_buffer_size=512,
         value_loss_weight=0.5,
     )
     trainer.set_network_lock(network_lock)
 
-    # Self-play with 100 simulations for better quality data
-    self_play_worker = SelfPlayWorker(network, encoder, trainer, num_simulations=100)
+    # Self-play: 用更少的 MCTS 模拟数来换取游戏速度（原来是 100）
+    # 这会显著提升每小时自对弈局数和训练 step 数
+    self_play_worker = SelfPlayWorker(network, encoder, trainer, num_simulations=32)
 
     trainer.start()
     self_play_worker.start()
 
+    # Clear any stale command file from上一次运行，避免残留的 stop 干扰本次会话。
+    if os.path.exists(CMD_PATH):
+        try:
+            os.remove(CMD_PATH)
+            print("[INFO] Cleared stale training_cmd.json.")
+        except Exception:
+            pass
+
+    def write_stats(stats_dict):
+        temp_path = STATS_PATH + f".{os.getpid()}.tmp"
+        try:
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(stats_dict, f)
+            if os.path.exists(STATS_PATH):
+                os.remove(STATS_PATH)
+            os.rename(temp_path, STATS_PATH)
+        except Exception as e:
+            print(f"[WARN] Failed to write training_stats: {e}")
+
+    # 初始状态：训练默认「未开始」，等待用户在前端点击 Start Training。
+    write_stats({
+        'step': 0,
+        'policy_loss': 0.0,
+        'value_loss': 0.0,
+        'total_loss': 0.0,
+        'win_rate': 0.0,
+        'games': 0,
+        'buffer': 0,
+        'min_buffer': trainer.min_buffer_size,
+        'ts': time.time(),
+        'running': False,
+        'status': 'Waiting for start...',
+        'lr': trainer.training_stats['lr'],
+    })
+
     print("[INFO] Training Loop Active...")
 
     last_save_time = time.time()
-    is_paused = False
+    # 默认暂停，等待前端通过 training_cmd.json 写入 {"command": "start"} 后再真正开始训练。
+    is_paused = True
     last_game_count = 0
     steps_this_cycle = 0
 
@@ -116,10 +155,15 @@ def main():
                     'running': False,
                     'status': 'Paused'
                 }
-                temp_stats_path = STATS_PATH + ".tmp"
-                with open(temp_stats_path, 'w') as f:
-                    json.dump(stats, f)
-                safe_replace(temp_stats_path, STATS_PATH)
+                temp_stats_path = STATS_PATH + f".{os.getpid()}.tmp"
+                try:
+                    with open(temp_stats_path, 'w', encoding='utf-8') as f:
+                        json.dump(stats, f)
+                except PermissionError as e:
+                    print(f"[WARN] Failed to open temp stats file (paused): {e}")
+                else:
+                    if not safe_replace(temp_stats_path, STATS_PATH):
+                        print("[WARN] Failed to update training_stats.json (paused).")
                 continue
 
             # --- Throttle: limit training to ~1 epoch per new game ---
@@ -147,10 +191,15 @@ def main():
                     'running': True,
                     'status': 'Waiting for new game data...'
                 }
-                temp_stats_path = STATS_PATH + ".tmp"
-                with open(temp_stats_path, 'w') as f:
-                    json.dump(stats, f)
-                safe_replace(temp_stats_path, STATS_PATH)
+                temp_stats_path = STATS_PATH + f".{os.getpid()}.tmp"
+                try:
+                    with open(temp_stats_path, 'w', encoding='utf-8') as f:
+                        json.dump(stats, f)
+                except PermissionError as e:
+                    print(f"[WARN] Failed to open temp stats file (waiting for new games): {e}")
+                else:
+                    if not safe_replace(temp_stats_path, STATS_PATH):
+                        print("[WARN] Failed to update training_stats.json (waiting for new games).")
                 continue
 
             result = trainer.train_step()
@@ -163,18 +212,25 @@ def main():
                 stats['ts'] = time.time()
                 stats['running'] = True
 
-                temp_stats_path = STATS_PATH + ".tmp"
-                with open(temp_stats_path, 'w') as f:
-                    json.dump(stats, f)
-                safe_replace(temp_stats_path, STATS_PATH)
+                temp_stats_path = STATS_PATH + f".{os.getpid()}.tmp"
+                try:
+                    with open(temp_stats_path, 'w', encoding='utf-8') as f:
+                        json.dump(stats, f)
+                except PermissionError as e:
+                    print(f"[WARN] Failed to open temp stats file (training): {e}")
+                else:
+                    if not safe_replace(temp_stats_path, STATS_PATH):
+                        print("[WARN] Failed to update training_stats.json (training).")
 
                 # Save model every 15 seconds
                 if time.time() - last_save_time > 15:
-                    temp_model_path = MODEL_PATH + ".tmp"
+                    temp_model_path = MODEL_PATH + f".{os.getpid()}.tmp"
                     torch.save(network.state_dict(), temp_model_path)
-                    safe_replace(temp_model_path, MODEL_PATH)
-                    last_save_time = time.time()
-                    print("[Checkpoint] Model saved.")
+                    if not safe_replace(temp_model_path, MODEL_PATH):
+                        print("[WARN] Failed to safely replace model_latest.pth")
+                    else:
+                        last_save_time = time.time()
+                        print("[Checkpoint] Model saved.")
 
             else:
                 time.sleep(0.5)
@@ -191,10 +247,15 @@ def main():
                     'running': True,
                     'status': 'Waiting for data...'
                 }
-                temp_stats_path = STATS_PATH + ".tmp"
-                with open(temp_stats_path, 'w') as f:
-                    json.dump(stats, f)
-                safe_replace(temp_stats_path, STATS_PATH)
+                temp_stats_path = STATS_PATH + f".{os.getpid()}.tmp"
+                try:
+                    with open(temp_stats_path, 'w', encoding='utf-8') as f:
+                        json.dump(stats, f)
+                except PermissionError as e:
+                    print(f"[WARN] Failed to open temp stats file (waiting for data): {e}")
+                else:
+                    if not safe_replace(temp_stats_path, STATS_PATH):
+                        print("[WARN] Failed to update training_stats.json (waiting for data).")
 
     except KeyboardInterrupt:
         print("[STOP] Training Worker Stopping...")

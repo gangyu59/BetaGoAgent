@@ -8,7 +8,12 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-    <div class="container">
+    <div class="page">
+        <div class="mode-tabs">
+            <a href="/" id="tab-training" class="tab-link tab-active">Training AI</a>
+            <a href="/katago" id="tab-katago" class="tab-link tab-inactive" target="_blank">KataGo AI</a>
+        </div>
+        <div class="container">
         <div class="sidebar">
             <h1>BetaGo Agent</h1>
             <div class="stats-panel">
@@ -55,6 +60,7 @@
                 </div>
                 <canvas id="lossChartLarge"></canvas>
             </div>
+        </div>
         </div>
     </div>
     <script src="static/js/script.js"></script>

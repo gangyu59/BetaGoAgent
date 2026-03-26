@@ -87,7 +87,9 @@ class Trainer:
             p_log_probs = torch.log_softmax(p_logits, dim=1)
             policy_loss = -torch.mean(torch.sum(policy_targets * p_log_probs, dim=1))
 
-            # Value loss: MSE
+            # Value loss: MSE between predicted outcome and actual game result (±1 or 0 for draw).
+            # On 9x9 the value head often fits quickly, so value_loss can become 1e-5~1e-6; that is
+            # expected and does not mean the loss is broken (UI shows it in scientific notation).
             value_loss = torch.nn.functional.mse_loss(v_pred, value_targets)
 
             # Accuracy
@@ -116,8 +118,10 @@ class Trainer:
         self.training_stats['lr'] = self.optimizer.param_groups[0]['lr']
 
         if self.training_stats['step'] % 50 == 0:
+            vloss = value_loss.item()
+            vstr = f"{vloss:.4f}" if vloss >= 0.0001 else f"{vloss:.2e}"
             print(f"[Train] Step {self.training_stats['step']}: "
-                  f"P={policy_loss.item():.4f} V={value_loss.item():.4f} "
+                  f"P={policy_loss.item():.4f} V={vstr} "
                   f"Acc={accuracy:.3f} LR={self.training_stats['lr']:.6f} "
                   f"Buf={current_buffer_size}")
 
