@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>KataGo AI - BetaGo Agent</title>
+    <link rel="stylesheet" href="static/css/style.css">
+</head>
+<body>
+    <div class="page">
+        <div class="mode-tabs">
+            <a href="/" class="tab-link tab-inactive">Training AI</a>
+            <a href="/katago" class="tab-link tab-active">KataGo AI</a>
+        </div>
+        <div class="container">
+            <div class="sidebar">
+                <h1>KataGo AI</h1>
+
+                <div class="game-info">
+                    <h3>Game Status</h3>
+                    <p>Turn: <span id="turn-indicator">Black</span></p>
+                    <p>Moves: <span id="move-count">0</span></p>
+                    <div class="score-display">
+                        <span class="score-black">Black: <span id="score-black">0</span></span>
+                        <span class="score-white">White: <span id="score-white">7.5</span></span>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <button id="btn-new-game" onclick="newGame()">New Game</button>
+                    <button id="btn-pass" onclick="playerPass()">Pass</button>
+                    <button id="btn-analyze" onclick="getAnalysis()">Analyze</button>
+                    <button id="btn-ai-vs-ai" onclick="startAiVsAi()">AI vs AI</button>
+                    <div class="controls-row" style="margin-top: 4px;">
+                        <button class="size-btn active-size" id="btn-size-9" onclick="setBoardSize(9)">9×9</button>
+                        <button class="size-btn" id="btn-size-13" onclick="setBoardSize(13)">13×13</button>
+                        <button class="size-btn" id="btn-size-19" onclick="setBoardSize(19)">19×19</button>
+                    </div>
+                </div>
+
+                <div id="game-result" style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #1abc9c; display: none;"></div>
+
+                <div id="analysis-panel" style="display: none;">
+                    <h3>Top Moves</h3>
+                    <div id="analysis-list" class="analysis-list"></div>
+                </div>
+
+                <div id="status-log" style="margin-top: 20px; color: #aaa; font-size: 12px;"></div>
+            </div>
+
+            <div class="main-area">
+                <div id="board-container">
+                    <div id="ai-hourglass"><div class="spinner"></div></div>
+                    <canvas id="go-board" width="600" height="600"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const canvas = document.getElementById("go-board");
+    const ctx = canvas.getContext("2d");
+    const statusLog = document.getElementById("status-log");
+
+    function log(msg) {
+        statusLog.innerText = msg;
+        console.log(msg);
+    }
+
+    let BOARD_SIZE = 9;
+    let PADDING = 30;
+    let CELL_SIZE;
+
+    let gameState = {
+        board: [],
+        turn: 1,
+        lastMove: null,
+        moveCount: 0,
+        score: null
+    };
+
+    let analysisData = null;   // top_moves from server
+    let aiVsAiMode = false;
+
+    // --- WebSocket ---
+    const ws = new WebSocket("ws://" + window.location.host + "/ws_katago");
+
+    ws.onopen = () => {
+        log("Connected to KataGo server");
+    };
+
+    ws.onerror = () => {
+        log("WebSocket error - KataGo may not be available");
+    };
+
+    ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === "error") {
+            log("Error: " + msg.message);
+            setThinking(false);
+            return;
+        }
+
+        if (msg.type === "init" || msg.type === "update") {
+            gameState.board = msg.board;
+            gameState.turn = msg.turn;
+            gameState.lastMove = msg.last_move !== undefined ? msg.last_move : null;
+            if (msg.score) {
+                gameState.score = msg.score;
+                updateScore(msg.score);
+            }
+            if (msg.type === "update") {
+                gameState.moveCount++;
+                const el = document.getElementById("move-count");
+                if (el) el.innerText = gameState.moveCount;
+            }
+            drawBoard();
+            updateTurn(gameState.turn);
+        } else if (msg.type === "game_over") {
+            gameState.board = msg.board;
+            if (msg.score) {
+                gameState.score = msg.score;
+                updateScore(msg.score);
+            }
+            drawBoard();
+            aiVsAiMode = false;
+            const resultEl = document.getElementById("game-result");
+            if (resultEl) {
+                const winner = msg.winner === 1 ? "Black" : "White";
+                const s = msg.score;
+                resultEl.innerText = `Game Over! ${winner} wins (B:${s.black_total} vs W:${s.white_total})`;
+                resultEl.style.display = "block";
+            }
+            setThinking(false);
+            const aiBtn = document.getElementById("btn-ai-vs-ai");
+            if (aiBtn) { aiBtn.disabled = false; aiBtn.innerText = "AI vs AI"; }
+        } else if (msg.type === "ai_thinking") {
+            setThinking(msg.on);
+        } else if (msg.type === "ai_vs_ai_started") {
+            log("AI vs AI started");
+            aiVsAiMode = true;
+        } else if (msg.type === "analysis") {
+            analysisData = msg.top_moves;
+            showAnalysisPanel(msg.top_moves);
+            drawBoard();
+            const btn = document.getElementById("btn-analyze");
+            if (btn) { btn.disabled = false; btn.innerText = "Analyze"; }
+        }
+    };
+
+    // --- Responsive canvas sizing ---
+
+    function getHoshi() {
+        if (BOARD_SIZE === 9)  return [[2,2],[6,2],[4,4],[2,6],[6,6]];
+        if (BOARD_SIZE === 13) return [[3,3],[3,9],[6,6],[9,3],[9,9]];
+        // 19x19
+        return [[3,3],[3,9],[3,15],[9,3],[9,9],[9,15],[15,3],[15,9],[15,15]];
+    }
+
+    function resizeBoard() {
+        let boardPx;
+        if (window.innerWidth <= 768) {
+            boardPx = window.innerWidth - 20;
+        } else {
+            // Scale up slightly for larger board sizes
+            boardPx = BOARD_SIZE === 9 ? 540 : BOARD_SIZE === 13 ? 600 : 660;
+        }
+        canvas.width = boardPx;
+        canvas.height = boardPx;
+        PADDING = Math.max(15, Math.round(boardPx * 0.05));
+        CELL_SIZE = (boardPx - 2 * PADDING) / (BOARD_SIZE - 1);
+        drawBoard();
+    }
+
+    window.addEventListener("resize", resizeBoard);
+
+    // --- Rendering ---
+
+    function drawBoard() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Grid
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let i = 0; i < BOARD_SIZE; i++) {
+            ctx.moveTo(PADDING + i * CELL_SIZE, PADDING);
+            ctx.lineTo(PADDING + i * CELL_SIZE, canvas.height - PADDING);
+            ctx.moveTo(PADDING, PADDING + i * CELL_SIZE);
+            ctx.lineTo(canvas.width - PADDING, PADDING + i * CELL_SIZE);
+        }
+        ctx.stroke();
+
+        // Hoshi (star points)
+        ctx.fillStyle = "#000";
+        for (const [col, row] of getHoshi()) {
+            ctx.beginPath();
+            ctx.arc(PADDING + col * CELL_SIZE, PADDING + row * CELL_SIZE, Math.max(2, CELL_SIZE * 0.07), 0, 2 * Math.PI);
+            ctx.fill();
+        }
+
+        // Analysis overlay (before stones so stones appear on top)
+        if (analysisData && analysisData.length > 0) {
+            drawAnalysisOverlay(analysisData);
+        }
+
+        // Stones: board[row][col], x=row, y=col
+        if (gameState.board && gameState.board.length > 0) {
+            for (let row = 0; row < BOARD_SIZE; row++) {
+                for (let col = 0; col < BOARD_SIZE; col++) {
+                    const stone = gameState.board[row] && gameState.board[row][col];
+                    if (stone) drawStone(col, row, stone);
+                }
+            }
+        }
+
+        // Last move marker: server sends [x, y] = [row, col]
+        if (gameState.lastMove) {
+            const [x, y] = gameState.lastMove;  // x=row, y=col
+            ctx.strokeStyle = "#ff0000";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(PADDING + y * CELL_SIZE, PADDING + x * CELL_SIZE, CELL_SIZE * 0.2, 0, 2 * Math.PI);
+            ctx.stroke();
+        }
+    }
+
+    function drawStone(col, row, color) {
+        const cx = PADDING + col * CELL_SIZE;
+        const cy = PADDING + row * CELL_SIZE;
+        const r = CELL_SIZE * 0.45;
+
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+
+        const grad = ctx.createRadialGradient(cx - r / 3, cy - r / 3, r / 5, cx, cy, r);
+        if (color === 1) {
+            grad.addColorStop(0, "#444");
+            grad.addColorStop(1, "#000");
+        } else {
+            grad.addColorStop(0, "#fff");
+            grad.addColorStop(1, "#ddd");
+        }
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        ctx.shadowColor = "rgba(0,0,0,0.5)";
+        ctx.shadowBlur = 5;
+        ctx.shadowOffsetX = 2;
+        ctx.shadowOffsetY = 2;
+        ctx.fill();
+
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+
+        if (color === 2) {
+            ctx.strokeStyle = "#aaa";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+    }
+
+    // Analysis colors: best=green, 2nd=yellow, 3rd=orange
+    const ANALYSIS_COLORS = ["#2ecc71", "#f1c40f", "#e67e22"];
+
+    function drawAnalysisOverlay(topMoves) {
+        topMoves.forEach((m, i) => {
+            const cx = PADDING + m.y * CELL_SIZE;  // m.y = col
+            const cy = PADDING + m.x * CELL_SIZE;  // m.x = row
+            const r = CELL_SIZE * 0.42;
+            const color = ANALYSIS_COLORS[i] || "#95a5a6";
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+            ctx.fillStyle = color + "cc";  // semi-transparent
+            ctx.fill();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Win rate label
+            ctx.fillStyle = "#000";
+            ctx.font = `bold ${Math.max(9, Math.round(CELL_SIZE * 0.32))}px Arial`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText((m.win_rate * 100).toFixed(0) + "%", cx, cy);
+        });
+    }
+
+    function showAnalysisPanel(topMoves) {
+        const panel = document.getElementById("analysis-panel");
+        const list = document.getElementById("analysis-list");
+        if (!panel || !list) return;
+
+        list.innerHTML = topMoves.map((m, i) => {
+            const col = String.fromCharCode(65 + (m.y >= 8 ? m.y + 1 : m.y));  // GTP col (skip I)
+            const row = BOARD_SIZE - m.x;
+            return `<div class="analysis-item">
+                <span style="color:${ANALYSIS_COLORS[i] || '#aaa'}">#${i + 1} ${col}${row}</span>
+                <span>${(m.win_rate * 100).toFixed(1)}%</span>
+            </div>`;
+        }).join("");
+
+        panel.style.display = "block";
+    }
+
+    // --- Interaction ---
+
+    function handleMove(clientX, clientY) {
+        if (gameState.turn !== 1 || aiVsAiMode) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+
+        const clickX = (clientX - rect.left) * scaleX;
+        const clickY = (clientY - rect.top) * scaleY;
+
+        const col = Math.round((clickX - PADDING) / CELL_SIZE);
+        const row = Math.round((clickY - PADDING) / CELL_SIZE);
+
+        if (col >= 0 && col < BOARD_SIZE && row >= 0 && row < BOARD_SIZE) {
+            analysisData = null;
+            document.getElementById("analysis-panel").style.display = "none";
+            ws.send(JSON.stringify({ type: "move", x: row, y: col }));
+        }
+    }
+
+    canvas.addEventListener("click", (e) => {
+        handleMove(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        handleMove(touch.clientX, touch.clientY);
+    }, { passive: false });
+
+    // --- UI functions ---
+
+    function updateTurn(turn) {
+        const el = document.getElementById("turn-indicator");
+        if (!el) return;
+        if (aiVsAiMode) {
+            el.innerText = turn === 1 ? "Black (KataGo)" : "White (KataGo)";
+            el.style.color = "#e67e22";
+        } else {
+            el.innerText = turn === 1 ? "Your Turn (Black)" : "AI Thinking (White)...";
+            el.style.color = turn === 1 ? "#ecf0f1" : "#e67e22";
+        }
+    }
+
+    function updateScore(score) {
+        if (!score) return;
+        const b = document.getElementById("score-black");
+        const w = document.getElementById("score-white");
+        if (b) b.innerText = score.black_total !== undefined ? score.black_total : 0;
+        if (w) w.innerText = score.white_total !== undefined ? score.white_total : 7.5;
+    }
+
+    function setThinking(on) {
+        const h = document.getElementById("ai-hourglass");
+        if (h) h.style.display = on ? "block" : "none";
+    }
+
+    function newGame() {
+        const btn = document.getElementById("btn-new-game");
+        if (btn) { btn.disabled = true; btn.innerText = "Starting..."; }
+        const resultEl = document.getElementById("game-result");
+        if (resultEl) resultEl.style.display = "none";
+        document.getElementById("analysis-panel").style.display = "none";
+
+        gameState = { board: [], turn: 1, lastMove: null, moveCount: 0, score: null };
+        analysisData = null;
+        aiVsAiMode = false;
+        drawBoard();
+        updateTurn(1);
+        document.getElementById("move-count").innerText = 0;
+
+        ws.send(JSON.stringify({ type: "start_game" }));
+        setTimeout(() => {
+            if (btn) { btn.disabled = false; btn.innerText = "New Game"; }
+        }, 1500);
+    }
+
+    function playerPass() {
+        if (aiVsAiMode) return;
+        ws.send(JSON.stringify({ type: "pass" }));
+    }
+
+    function getAnalysis() {
+        const btn = document.getElementById("btn-analyze");
+        if (btn) { btn.disabled = true; btn.innerText = "Analyzing..."; }
+        ws.send(JSON.stringify({ type: "get_analysis" }));
+    }
+
+    function startAiVsAi() {
+        const btn = document.getElementById("btn-ai-vs-ai");
+        if (btn) { btn.disabled = true; btn.innerText = "Running..."; }
+        const resultEl = document.getElementById("game-result");
+        if (resultEl) resultEl.style.display = "none";
+        gameState.moveCount = 0;
+        document.getElementById("move-count").innerText = 0;
+        ws.send(JSON.stringify({ type: "start_ai_vs_ai" }));
+    }
+
+    function setBoardSize(size) {
+        BOARD_SIZE = size;
+
+        // Update button styles
+        [9, 13, 19].forEach(s => {
+            const b = document.getElementById(`btn-size-${s}`);
+            if (b) b.classList.toggle("active-size", s === size);
+        });
+
+        // Reset game state
+        gameState = { board: [], turn: 1, lastMove: null, moveCount: 0, score: null };
+        analysisData = null;
+        aiVsAiMode = false;
+        document.getElementById("move-count").innerText = 0;
+        document.getElementById("analysis-panel").style.display = "none";
+        const resultEl = document.getElementById("game-result");
+        if (resultEl) resultEl.style.display = "none";
+
+        // Notify server and resize canvas
+        ws.send(JSON.stringify({ type: "set_board_size", size }));
+        resizeBoard();
+    }
+
+    // Initial setup
+    resizeBoard();
+    </script>
+</body>
+</html>
