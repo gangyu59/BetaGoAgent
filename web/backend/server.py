@@ -30,7 +30,8 @@ CMD_PATH = os.path.join(BASE_DIR, 'training_cmd.json')
 
 # KataGo paths (external engine)
 KATAGO_DIR = os.path.abspath(os.path.join(BASE_DIR, '..', 'KataGo'))
-KATAGO_EXE = os.path.join(KATAGO_DIR, 'katago.exe')
+_katago_bin = 'katago.exe' if sys.platform == 'win32' else 'katago'
+KATAGO_EXE = os.path.join(KATAGO_DIR, _katago_bin)
 KATAGO_CONFIG = os.path.join(KATAGO_DIR, 'default_gtp.cfg')
 KATAGO_MODEL = os.path.join(KATAGO_DIR, 'model.bin.gz')
 
