@@ -12,8 +12,8 @@ log("Connecting to WebSocket...");
 const ws = new WebSocket("ws://" + window.location.host + "/ws");
 
 const BOARD_SIZE = 9;
-const PADDING = 30;
-const CELL_SIZE = (canvas.width - 2 * PADDING) / (BOARD_SIZE - 1);
+let PADDING = 30;
+let CELL_SIZE = (canvas.width - 2 * PADDING) / (BOARD_SIZE - 1);
 
 let gameState = {
     board: Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(0)),
@@ -23,6 +23,26 @@ let gameState = {
 };
 
 let showHeatmap = true;
+
+// --- Responsive canvas sizing ---
+
+function resizeBoard() {
+    if (window.innerWidth <= 768) {
+        // Mobile: board fills screen width minus board-container padding (10px each side)
+        const size = Math.min(window.innerWidth - 20, window.screen.width - 20);
+        canvas.width = size;
+        canvas.height = size;
+        PADDING = Math.max(15, Math.round(size * 0.05));
+    } else {
+        canvas.width = 600;
+        canvas.height = 600;
+        PADDING = 30;
+    }
+    CELL_SIZE = (canvas.width - 2 * PADDING) / (BOARD_SIZE - 1);
+    drawBoard();
+}
+
+window.addEventListener("resize", resizeBoard);
 
 // --- Rendering ---
 
@@ -164,6 +184,21 @@ canvas.addEventListener("click", (e) => {
     }
 });
 
+// Touch support for mobile
+canvas.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = Math.round(((touch.clientX - rect.left) * scaleX - PADDING) / CELL_SIZE);
+    const y = Math.round(((touch.clientY - rect.top) * scaleY - PADDING) / CELL_SIZE);
+    if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE) {
+        log(`Touch at ${x}, ${y}`);
+        ws.send(JSON.stringify({ type: "move", x, y }));
+    }
+}, { passive: false });
+
 // --- UI Updates ---
 
 function updateStats(turn, analysis) {
@@ -300,8 +335,8 @@ ws.onerror = (err) => {
     log("WebSocket Error: " + err);
 };
 
-// Initial draw (empty board)
-drawBoard();
+// Initial draw (empty board, responsive sizing)
+resizeBoard();
 
 // --- Chart.js Setup (Mock for now) ---
 const ctxChart = document.getElementById("lossChart").getContext("2d");
